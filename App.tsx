@@ -11,7 +11,7 @@ import { ExclamationTriangleIcon } from './components/icons/ExclamationTriangleI
 import { SpinnerIcon } from './components/icons/SpinnerIcon';
 import { PlatformSelector } from './components/PlatformSelector';
 import { ArrowLeftIcon } from './components/icons/ArrowLeftIcon';
-import { KeyProfileCreator } from './components/KeyProfileCreator';
+import { MediatekInfo } from './components/MediatekInfo';
 
 // CRC-32 Checksum Implementation
 const makeCrc32Table = () => {
@@ -82,12 +82,11 @@ const parseKeysFromDonorFile = (content: string): { modulus: string, sign: strin
 
 export type ProfileKey = keyof typeof SIGNATURE_PROFILES;
 export type Platform = 'qualcomm' | 'mediatek' | null;
-export type CustomProfile = { modulus: string, sign: string, dataSign: string } | null;
 
 const App: React.FC = () => {
     const [platform, setPlatform] = useState<Platform>(null);
     const [criticalDataFile, setCriticalDataFile] = useState<File | null>(null);
-    const [customProfile, setCustomProfile] = useState<CustomProfile>(null);
+    const [donorFile, setDonorFile] = useState<File | null>(null);
     const [selectedProfile, setSelectedProfile] = useState<ProfileKey | ''>('');
     const [newImei1, setNewImei1] = useState<string>('');
     const [newImei2, setNewImei2] = useState<string>('');
@@ -97,10 +96,11 @@ const App: React.FC = () => {
     const [error, setError] = useState<string | null>(null);
     
     const processedFile = useRef<File | null>(null);
-    const processedProfileRef = useRef<string | null>(null);
+    const processedDonorFile = useRef<File | null>(null);
     const processedImei1 = useRef<string>('');
     const processedImei2 = useRef<string>('');
-   
+    const processedProfile = useRef<string>('');
+
     const isImei1Valid = useMemo(() => /^\d{15}$/.test(newImei1), [newImei1]);
     const isImei2Valid = useMemo(() => /^\d{15}$/.test(newImei2), [newImei2]);
     
@@ -109,7 +109,7 @@ const App: React.FC = () => {
         if (!baseChecks) return false;
 
         if (platform === 'mediatek') {
-            return !!customProfile;
+            return !!donorFile;
         }
 
         if (platform === 'qualcomm') {
@@ -117,7 +117,7 @@ const App: React.FC = () => {
         }
 
         return false;
-    }, [criticalDataFile, customProfile, isImei1Valid, isImei2Valid, platform, selectedProfile]);
+    }, [criticalDataFile, donorFile, isImei1Valid, isImei2Valid, platform, selectedProfile]);
 
     const addLog = useCallback((message: string) => {
         setLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ${message}`]);
@@ -131,10 +131,11 @@ const App: React.FC = () => {
         addLog(`'${criticalDataFile.name}' (onarılacak dosya) okundu.`);
         
         if (platform === 'mediatek') {
-            if (!customProfile) throw new Error("MediaTek onarımı için bir anahtar profili oluşturulmalı.");
-            addLog(`Özel anahtar profili kullanılıyor.`);
-            patchKeys = { ...customProfile, exponent: '10001' };
-            addLog("İmza anahtarları profilden başarıyla yüklendi.");
+            if (!donorFile) throw new Error("MediaTek onarımı için donör dosyası gerekli.");
+            const donorFileContent = await donorFile.text();
+            addLog(`'${donorFile.name}' (donör dosya) okundu.`);
+            patchKeys = { ...parseKeysFromDonorFile(donorFileContent), exponent: '10001' };
+            addLog("İmza anahtarları donör dosyadan başarıyla çıkarıldı.");
         } else { // qualcomm
              if (!selectedProfile) throw new Error("Qualcomm onarımı için bir profil seçilmeli.");
              const profile = SIGNATURE_PROFILES[selectedProfile];
@@ -222,9 +223,10 @@ const App: React.FC = () => {
 
             addLog('İşlem başarıyla tamamlandı!');
             processedFile.current = criticalDataFile;
+            processedDonorFile.current = donorFile;
             processedImei1.current = newImei1;
             processedImei2.current = newImei2;
-            processedProfileRef.current = customProfile ? JSON.stringify(customProfile) : selectedProfile;
+            processedProfile.current = selectedProfile;
 
         } catch (e: any) {
             const errorMessage = `HATA: ${e.message}`;
@@ -233,19 +235,19 @@ const App: React.FC = () => {
         } finally {
             setIsProcessing(false);
         }
-    }, [isReadyForProcessing, platform, criticalDataFile, customProfile, selectedProfile, newImei1, newImei2, addLog]);
+    }, [isReadyForProcessing, platform, criticalDataFile, donorFile, selectedProfile, newImei1, newImei2, addLog]);
     
     useEffect(() => {
         if (isReadyForProcessing && !isProcessing) {
-             const currentProfile = customProfile ? JSON.stringify(customProfile) : selectedProfile;
              if (criticalDataFile !== processedFile.current || 
-                 currentProfile !== processedProfileRef.current ||
+                 donorFile !== processedDonorFile.current ||
                  newImei1 !== processedImei1.current || 
-                 newImei2 !== processedImei2.current) {
+                 newImei2 !== processedImei2.current || 
+                 selectedProfile !== processedProfile.current) {
                 handleProcessFile();
              }
         }
-    }, [isReadyForProcessing, isProcessing, criticalDataFile, customProfile, newImei1, newImei2, selectedProfile, handleProcessFile]);
+    }, [isReadyForProcessing, isProcessing, criticalDataFile, donorFile, newImei1, newImei2, selectedProfile, handleProcessFile]);
 
     const resetState = () => {
         setLogs([]);
@@ -257,29 +259,10 @@ const App: React.FC = () => {
         setCriticalDataFile(file);
         resetState();
     }
-    
-    const handleProfileCreation = async (file: File | null) => {
-        setCustomProfile(null);
+    const handleDonorFileSelect = (file: File | null) => {
+        setDonorFile(file);
         resetState();
-    
-        if (!file) {
-            addLog("Özel profil temizlendi.");
-            return;
-        }
-
-        addLog(`'${file.name}' dosyasından anahtar profili oluşturuluyor...`);
-        try {
-            const content = await file.text();
-            const keys = parseKeysFromDonorFile(content);
-            setCustomProfile(keys);
-            addLog("Anahtar profili başarıyla oluşturuldu ve yüklendi.");
-        } catch (e: any) {
-            const errorMessage = `HATA: Profil oluşturulamadı. ${e.message}`;
-            setError(errorMessage);
-            addLog(errorMessage);
-            setCustomProfile(null);
-        }
-    };
+    }
     
     const handleProfileChange = (value: ProfileKey | '') => {
         setSelectedProfile(value);
@@ -300,8 +283,8 @@ const App: React.FC = () => {
         let guideText = "Otomatik onarım için tüm adımları tamamlayın.";
         if (!criticalDataFile) {
             guideText = "Başlamak için onarılacak 'critical_data' dosyasını yükleyin.";
-        } else if (platform === 'mediatek' && !customProfile) {
-             guideText = "Lütfen 2. adımdaki araçla bir imza profili oluşturun.";
+        } else if (platform === 'mediatek' && !donorFile) {
+             guideText = "Lütfen imzaları almak için bir donör 'critical_data' dosyası yükleyin.";
         } else if (platform === 'qualcomm' && !selectedProfile) {
             guideText = "Lütfen cihazınız için bir imza profili seçin.";
         } else if (!isImei1Valid || !isImei2Valid) {
@@ -314,7 +297,7 @@ const App: React.FC = () => {
     const handlePlatformSelect = (selectedPlatform: Platform) => {
         setPlatform(selectedPlatform);
         setCriticalDataFile(null);
-        setCustomProfile(null);
+        setDonorFile(null);
         setSelectedProfile('');
         setNewImei1('');
         setNewImei2('');
@@ -342,11 +325,14 @@ const App: React.FC = () => {
                             disabled={isProcessing} 
                         />
                          {platform === 'mediatek' && (
-                            <KeyProfileCreator 
-                                onFileSelect={handleProfileCreation} 
-                                disabled={isProcessing} 
-                                profile={customProfile} 
-                            />
+                            <>
+                                <MediatekInfo />
+                                <FileUpload
+                                    label="2. İmza Alınacak 'critical_data' Yedeği (Donör)"
+                                    onFileSelect={handleDonorFileSelect}
+                                    disabled={isProcessing}
+                                />
+                            </>
                          )}
                         {platform === 'qualcomm' && (
                             <ModelSelector
